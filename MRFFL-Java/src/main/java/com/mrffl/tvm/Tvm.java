@@ -31,6 +31,17 @@ public final class Tvm {
     public static final int ERROR_LEVEL_I_SOLVER_FAILED_NO_PV = 1101;
     public static final int ERROR_INCONSISTENT_LEVEL = 1102;
     
+    public static final int ERROR_TOO_MANY_UNKNOWNS_GEOMETRIC = 1033;
+    public static final int ERROR_UNKNOWN_UNKNOWNS_GEOMETRIC = 1034;
+    public static final int ERROR_GEOMETRIC_N_SOLVER_FAILED = 1035;
+    public static final int ERROR_GEOMETRIC_N_FV_SOLVER_FAILED = 1036;
+    public static final int ERROR_GEOMETRIC_PV_FV_SOLVER_FAILED = 1037;
+    public static final int ERROR_GEOMETRIC_A_SOLVER_FAILED = 1038;
+    public static final int ERROR_INCONSISTENT_GEOMETRIC = 1001;
+    
+    public static final int ERROR_ARITHMETIC_UNABLE_TO_SOLVE = 4129;
+    public static final int ERROR_INCONSISTENT_ARITHMETIC = 4097;
+    
     private Tvm() {
         throw new AssertionError("Utility class");
     }
@@ -393,5 +404,350 @@ public final class Tvm {
         }
         
         return new TvmResult(n, i, pv, fv, a, 0, 0, 0);
+    }
+    
+    /**
+     * Solve for TVM parameters for a geometric annuity certain.
+     * Can solve one or two variables from {var_n, var_pv, var_fv, var_a}.
+     * 
+     * @param n Number of compounding periods
+     * @param i Discount rate as a percentage
+     * @param g Payment growth rate as a percentage
+     * @param pv Present Value
+     * @param fv Future Value
+     * @param a First payment (Annuity)
+     * @param d Delay from time zero (d=0 is beginning of period 1, d=j is end of period j)
+     * @param e Early end counted from time end (e=0 means last payment at end of period n)
+     * @param unknowns Variables to solve for
+     * @return TvmResult with status indicating success (0) or error code
+     */
+    public static TvmResult tvmDelayedGeometricAnnuitySolve(double n, double i, double g, double pv, double fv, double a, 
+                                                             int d, int e, int unknowns) {
+        int numUnknowns = Bitset.size(unknowns);
+        
+        if (numUnknowns > 2) {
+            return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_TOO_MANY_UNKNOWNS_GEOMETRIC);
+        }
+        
+        int allowedUnknowns = VarSets.VAR_N + VarSets.VAR_PV + VarSets.VAR_FV + VarSets.VAR_A;
+        if (Bitset.isNotSubset(unknowns, allowedUnknowns)) {
+            return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_UNKNOWN_UNKNOWNS_GEOMETRIC);
+        }
+        
+        double iq = Percentages.percentageToFraction(i);
+        double gq = Percentages.percentageToFraction(g);
+        double iq1 = 1 + iq;
+        double gq1 = 1 + gq;
+        double giq = gq - iq;
+        
+        if (Math.abs(i - g) < MrfflConfig.ZERO_EPSILON) {
+            if (Bitset.isSubset(VarSets.VAR_N, unknowns)) {
+                if (Bitset.isSubset(VarSets.VAR_FV, unknowns)) {
+                    final double finalA = a;
+                    final double finalFv = fv;
+                    final double finalPv = pv;
+                    final double finalIq1 = iq1;
+                    final int finalD = d;
+                    final int finalE = e;
+                    DoubleUnaryOperator sfN = nVal -> {
+                        double fvCalc = Math.pow(finalIq1, nVal - finalD) * (nVal - finalE - finalD + 1) * finalA;
+                        double pvCalc = Math.pow(finalIq1, -finalD) * (nVal - finalE - finalD + 1) * finalA;
+                        return fvCalc / pvCalc - finalFv / finalPv;
+                    };
+                    
+                    double[] x0Inits = {1.0};
+                    double[] x1Inits = {1000.0};
+                    SolverResult solverResult = Solver.multiBisection(x0Inits, x1Inits, sfN, 
+                                                                       MrfflConfig.ZERO_EPSILON, MrfflConfig.ZERO_EPSILON, 
+                                                                       1000, false);
+                    if (solverResult.getStatus() != 0) {
+                        return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_GEOMETRIC_N_FV_SOLVER_FAILED);
+                    }
+                    n = solverResult.getXc();
+                    fv = Math.pow(iq1, n - d) * (n - e - d + 1) * a;
+                } else {
+                    n = fv / (Math.pow(iq1, n - d) * a) + e + d - 1;
+                }
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_A, unknowns)) {
+                a = fv / (Math.pow(iq1, n - d) * (n - e - d + 1));
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_FV, unknowns)) {
+                fv = Math.pow(iq1, n - d) * (n - e - d + 1) * a;
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_PV, unknowns)) {
+                pv = Math.pow(iq1, -d) * (n - e - d + 1) * a;
+            }
+        } else {
+            if (Bitset.isSubset(VarSets.VAR_A + VarSets.VAR_PV, unknowns)) {
+                final double finalPv = pv;
+                final double finalGq1 = gq1;
+                final double finalIq1 = iq1;
+                final double finalN = n;
+                final int finalE = e;
+                final int finalD = d;
+                final double finalGiq = giq;
+                DoubleUnaryOperator sfAPv = aVal -> {
+                    double pvCalc = (finalGq1 * Math.pow(finalGq1 / finalIq1, finalN - finalE) - Math.pow(finalGq1 / finalIq1, finalD) * finalIq1) * Math.pow(finalGq1, -finalD) * aVal / finalGiq;
+                    return pvCalc - finalPv;
+                };
+                
+                double[] x0Inits = {-1000.0};
+                double[] x1Inits = {1000.0};
+                SolverResult solverResult = Solver.multiBisection(x0Inits, x1Inits, sfAPv, 
+                                                                   MrfflConfig.ZERO_EPSILON, MrfflConfig.ZERO_EPSILON, 
+                                                                   1000, false);
+                if (solverResult.getStatus() != 0) {
+                    return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_GEOMETRIC_A_SOLVER_FAILED);
+                }
+                a = solverResult.getXc();
+                pv = (gq1 * Math.pow(gq1 / iq1, n - e) - Math.pow(gq1 / iq1, d) * iq1) * Math.pow(gq1, -d) * a / giq;
+            } else if (Bitset.isSubset(VarSets.VAR_A + VarSets.VAR_FV, unknowns)) {
+                a = fv * giq / (Math.pow(gq1, -d + n - e + 1) * Math.pow(iq1, e) - Math.pow(iq1, 1 + n - d));
+                fv = 1 / giq * (Math.pow(gq1, -d + n - e + 1) * Math.pow(iq1, e) - Math.pow(iq1, 1 + n - d)) * a;
+            } else if (Bitset.isSubset(VarSets.VAR_A + VarSets.VAR_N, unknowns)) {
+                final double finalA = a;
+                final double finalFv = fv;
+                final double finalPv = pv;
+                final double finalGq1 = gq1;
+                final double finalIq1 = iq1;
+                final int finalD = d;
+                final int finalE = e;
+                final double finalGiq = giq;
+                DoubleUnaryOperator sfAN = nVal -> {
+                    double fvCalc = 1 / finalGiq * (Math.pow(finalGq1, -finalD + nVal - finalE + 1) * Math.pow(finalIq1, finalE) - Math.pow(finalIq1, 1 + nVal - finalD)) * finalA;
+                    double pvCalc = (finalGq1 * Math.pow(finalGq1 / finalIq1, nVal - finalE) - Math.pow(finalGq1 / finalIq1, finalD) * finalIq1) * Math.pow(finalGq1, -finalD) * finalA / finalGiq;
+                    return fvCalc / pvCalc - finalFv / finalPv;
+                };
+                
+                double[] x0Inits = {1.0};
+                double[] x1Inits = {1000.0};
+                SolverResult solverResult = Solver.multiBisection(x0Inits, x1Inits, sfAN, 
+                                                                   MrfflConfig.ZERO_EPSILON, MrfflConfig.ZERO_EPSILON, 
+                                                                   1000, false);
+                if (solverResult.getStatus() != 0) {
+                    return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_GEOMETRIC_N_SOLVER_FAILED);
+                }
+                n = solverResult.getXc();
+                a = fv * giq / (Math.pow(gq1, -d + n - e + 1) * Math.pow(iq1, e) - Math.pow(iq1, 1 + n - d));
+            } else if (Bitset.isSubset(VarSets.VAR_N + VarSets.VAR_FV, unknowns)) {
+                final double finalA = a;
+                final double finalFv = fv;
+                final double finalPv = pv;
+                final double finalGq1 = gq1;
+                final double finalIq1 = iq1;
+                final int finalD = d;
+                final int finalE = e;
+                final double finalGiq = giq;
+                DoubleUnaryOperator sfNFv = nVal -> {
+                    double fvCalc = 1 / finalGiq * (Math.pow(finalGq1, -finalD + nVal - finalE + 1) * Math.pow(finalIq1, finalE) - Math.pow(finalIq1, 1 + nVal - finalD)) * finalA;
+                    double pvCalc = (finalGq1 * Math.pow(finalGq1 / finalIq1, nVal - finalE) - Math.pow(finalGq1 / finalIq1, finalD) * finalIq1) * Math.pow(finalGq1, -finalD) * finalA / finalGiq;
+                    return fvCalc / pvCalc - finalFv / finalPv;
+                };
+                
+                double[] x0Inits = {1.0};
+                double[] x1Inits = {1000.0};
+                SolverResult solverResult = Solver.multiBisection(x0Inits, x1Inits, sfNFv, 
+                                                                   MrfflConfig.ZERO_EPSILON, MrfflConfig.ZERO_EPSILON, 
+                                                                   1000, false);
+                if (solverResult.getStatus() != 0) {
+                    return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_GEOMETRIC_N_FV_SOLVER_FAILED);
+                }
+                n = solverResult.getXc();
+                fv = 1 / giq * (Math.pow(gq1, -d + n - e + 1) * Math.pow(iq1, e) - Math.pow(iq1, 1 + n - d)) * a;
+            } else if (Bitset.isSubset(VarSets.VAR_PV + VarSets.VAR_FV, unknowns)) {
+                final double finalFv = fv;
+                final double finalIq1 = iq1;
+                final double finalN = n;
+                DoubleUnaryOperator sfPvFv = pvVal -> {
+                    double fvCalc = pvVal * Math.pow(finalIq1, finalN);
+                    return fvCalc - finalFv;
+                };
+                
+                double[] x0Inits = {-1000.0};
+                double[] x1Inits = {1000.0};
+                SolverResult solverResult = Solver.multiBisection(x0Inits, x1Inits, sfPvFv, 
+                                                                   MrfflConfig.ZERO_EPSILON, MrfflConfig.ZERO_EPSILON, 
+                                                                   1000, false);
+                if (solverResult.getStatus() != 0) {
+                    return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_GEOMETRIC_PV_FV_SOLVER_FAILED);
+                }
+                pv = solverResult.getXc();
+                fv = pv * Math.pow(iq1, n);
+            } else {
+                if (Bitset.isSubset(VarSets.VAR_FV, unknowns)) {
+                    fv = 1 / giq * (Math.pow(gq1, -d + n - e + 1) * Math.pow(iq1, e) - Math.pow(iq1, 1 + n - d)) * a;
+                }
+                if (Bitset.isSubset(VarSets.VAR_PV, unknowns)) {
+                    pv = (gq1 * Math.pow(gq1 / iq1, n - e) - Math.pow(gq1 / iq1, d) * iq1) * Math.pow(gq1, -d) * a / giq;
+                }
+            }
+        }
+        
+        return tvmDelayedGeometricAnnuityCheck(n, i, g, pv, fv, a, d, e);
+    }
+    
+    /**
+     * Check TVM parameters for a geometric annuity certain.
+     * 
+     * @param n Number of compounding periods
+     * @param i Discount rate as a percentage
+     * @param g Payment growth rate as a percentage
+     * @param pv Present Value
+     * @param fv Future Value
+     * @param a First payment (Annuity)
+     * @param d Delay from time zero
+     * @param e Early end counted from time end
+     * @return TvmResult with status indicating consistency
+     */
+    public static TvmResult tvmDelayedGeometricAnnuityCheck(double n, double i, double g, double pv, double fv, double a, 
+                                                             int d, int e) {
+        double iq = Percentages.percentageToFraction(i);
+        double gq = Percentages.percentageToFraction(g);
+        double iq1 = 1 + iq;
+        double gq1 = 1 + gq;
+        double giq = gq - iq;
+        
+        if (Math.abs(i - g) < MrfflConfig.ZERO_EPSILON) {
+            double expectedFv = Math.pow(iq1, n - d) * (n - e - d + 1) * a;
+            double expectedPv = Math.pow(iq1, -d) * (n - e - d + 1) * a;
+            
+            if (Math.abs(expectedFv - fv) > CONSISTENT_EPSILON) {
+                return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_INCONSISTENT_GEOMETRIC);
+            }
+            if (Math.abs(expectedPv - pv) > CONSISTENT_EPSILON) {
+                return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_INCONSISTENT_GEOMETRIC);
+            }
+        } else {
+            double expectedFv = 1 / giq * (Math.pow(gq1, -d + n - e + 1) * Math.pow(iq1, e) - Math.pow(iq1, 1 + n - d)) * a;
+            double expectedPv = (gq1 * Math.pow(gq1 / iq1, n - e) - Math.pow(gq1 / iq1, d) * iq1) * Math.pow(gq1, -d) * a / giq;
+            
+            if (Math.abs(expectedFv - fv) > CONSISTENT_EPSILON) {
+                return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_INCONSISTENT_GEOMETRIC);
+            }
+            if (Math.abs(expectedPv - pv) > CONSISTENT_EPSILON) {
+                return new TvmResult(n, i, pv, fv, a, g, 0, ERROR_INCONSISTENT_GEOMETRIC);
+            }
+        }
+        
+        return new TvmResult(n, i, pv, fv, a, g, 0, 0);
+    }
+    
+    /**
+     * Solve for TVM parameters for an arithmetic annuity certain.
+     * Can solve one or two variables except certain combinations.
+     * Cannot solve: var_n+var_i, var_n+var_q, var_n+var_pv, var_n+var_fv, var_i+var_pv, var_i+var_fv, var_q+var_a
+     * 
+     * @param n Number of compounding periods
+     * @param i Discount rate as a percentage
+     * @param q Payment growth rate (added at each payment)
+     * @param pv Present Value
+     * @param fv Future Value
+     * @param a First payment (Annuity)
+     * @param d Delay from time zero (d=0 is beginning of period 1, d=j is end of period j)
+     * @param e Early end counted from time end (e=0 means last payment at end of period n)
+     * @param unknowns Variables to solve for
+     * @return TvmResult with status indicating success (0) or error code
+     */
+    public static TvmResult tvmDelayedArithmeticAnnuitySolve(double n, double i, double q, double pv, double fv, double a, 
+                                                               int d, int e, int unknowns) {
+        int curUnk = unknowns;
+        int lstUnk = curUnk;
+        double iq = Percentages.percentageToFraction(i);
+        double iq1 = 1 + iq;
+        double epd = e + d;
+        double n1 = n + 1;
+        
+        while (true) {
+            if (Bitset.isSubset(VarSets.VAR_I, curUnk) && Bitset.hasNoIntersection(curUnk, VarSets.VAR_FV + VarSets.VAR_PV + VarSets.VAR_N)) {
+                iq = Math.pow(fv / pv, 1.0 / n) - 1;
+                i = Percentages.fractionToPercentage(iq);
+                iq1 = 1 + iq;
+                curUnk = Bitset.minus(curUnk, VarSets.VAR_I);
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_N, curUnk) && Bitset.hasNoIntersection(curUnk, VarSets.VAR_FV + VarSets.VAR_PV + VarSets.VAR_I)) {
+                n = Math.log(fv / pv) / Math.log(iq1);
+                n1 = n + 1;
+                curUnk = Bitset.minus(curUnk, VarSets.VAR_N);
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_PV, curUnk) && Bitset.hasNoIntersection(curUnk, VarSets.VAR_FV + VarSets.VAR_I + VarSets.VAR_N)) {
+                pv = fv / Math.pow(iq1, n);
+                curUnk = Bitset.minus(curUnk, VarSets.VAR_PV);
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_FV, curUnk) && Bitset.hasNoIntersection(curUnk, VarSets.VAR_PV + VarSets.VAR_I + VarSets.VAR_N)) {
+                fv = pv * Math.pow(iq1, n);
+                curUnk = Bitset.minus(curUnk, VarSets.VAR_FV);
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_A, curUnk) && Bitset.hasNoIntersection(curUnk, VarSets.VAR_I + VarSets.VAR_N + VarSets.VAR_Q + VarSets.VAR_FV)) {
+                a = Math.pow(iq1, d) * (Math.pow(iq1, n1 - d) * q + q * (-1 + (epd - n1) * iq) * Math.pow(iq1, e) - fv * iq * iq) / iq / (Math.pow(iq1, epd) - Math.pow(iq1, n1));
+                curUnk = Bitset.minus(curUnk, VarSets.VAR_A);
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_Q, curUnk) && Bitset.hasNoIntersection(curUnk, VarSets.VAR_I + VarSets.VAR_A + VarSets.VAR_PV + VarSets.VAR_N)) {
+                q = iq * (a * Math.pow(iq1, epd) + pv * iq * Math.pow(iq1, d + n) - a * Math.pow(iq1, n) * iq1) / ((-1 + (epd - n1) * iq) * Math.pow(iq1, epd) + Math.pow(iq1, n1));
+                curUnk = Bitset.minus(curUnk, VarSets.VAR_Q);
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_PV, curUnk) && Bitset.hasNoIntersection(curUnk, VarSets.VAR_N + VarSets.VAR_Q + VarSets.VAR_A + VarSets.VAR_I)) {
+                pv = ((((epd - n1) * q - a) * iq - q) * Math.pow(1.0 / iq1, n - e) + (a * iq + q) * iq1 * Math.pow(1.0 / iq1, d)) / (iq * iq);
+                curUnk = Bitset.minus(curUnk, VarSets.VAR_PV);
+            }
+            
+            if (Bitset.isSubset(VarSets.VAR_FV, curUnk) && Bitset.hasNoIntersection(curUnk, VarSets.VAR_N + VarSets.VAR_Q + VarSets.VAR_A + VarSets.VAR_I)) {
+                fv = (Math.pow(iq1, n1 - d) * (a * iq + q) - Math.pow(iq1, e) * (((n1 - e - d) * q + a) * iq + q)) / (iq * iq);
+                curUnk = Bitset.minus(curUnk, VarSets.VAR_FV);
+            }
+            
+            if (curUnk == lstUnk) {
+                break;
+            }
+            lstUnk = curUnk;
+        }
+        
+        if (Bitset.size(curUnk) > 0) {
+            return new TvmResult(n, i, pv, fv, a, 0, q, ERROR_ARITHMETIC_UNABLE_TO_SOLVE);
+        }
+        
+        return tvmDelayedArithmeticAnnuityCheck(n, i, q, pv, fv, a, d, e);
+    }
+    
+    /**
+     * Check TVM parameters for an arithmetic annuity certain.
+     * 
+     * @param n Number of compounding periods
+     * @param i Discount rate as a percentage
+     * @param q Payment growth rate (added at each payment)
+     * @param pv Present Value
+     * @param fv Future Value
+     * @param a First payment (Annuity)
+     * @param d Delay from time zero
+     * @param e Early end counted from time end
+     * @return TvmResult with status indicating consistency
+     */
+    public static TvmResult tvmDelayedArithmeticAnnuityCheck(double n, double i, double q, double pv, double fv, double a, 
+                                                               int d, int e) {
+        double iq = Percentages.percentageToFraction(i);
+        double iq1 = 1 + iq;
+        double n1 = n + 1;
+        double epd = e + d;
+        
+        double expectedFv = (Math.pow(iq1, n1 - d) * (a * iq + q) - Math.pow(iq1, e) * (((n1 - e - d) * q + a) * iq + q)) / (iq * iq);
+        double expectedPv = ((((d - 1 - n + e) * q - a) * iq - q) * Math.pow(1.0 / iq1, n - e) + (a * iq + q) * iq1 * Math.pow(1.0 / iq1, d)) / (iq * iq);
+        
+        if (Math.abs(expectedFv - fv) > CONSISTENT_EPSILON) {
+            return new TvmResult(n, i, pv, fv, a, 0, q, ERROR_INCONSISTENT_ARITHMETIC);
+        }
+        if (Math.abs(expectedPv - pv) > CONSISTENT_EPSILON) {
+            return new TvmResult(n, i, pv, fv, a, 0, q, ERROR_INCONSISTENT_ARITHMETIC);
+        }
+        
+        return new TvmResult(n, i, pv, fv, a, 0, q, 0);
     }
 }
