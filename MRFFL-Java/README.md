@@ -49,10 +49,10 @@ mvn package
 - ✅ `PrtSets` - Print formatting bitset constants
 - ✅ `Percentages` - Percentage conversion and calculation utilities
 
-### Phase 2: Support Utilities 🚧 IN PROGRESS
-- ⬜ `Bitset` - Bitset operations
-- ⬜ `Solver` - Numerical root-finding (bisection method)
-- ⬜ `Stats` - Random number generation and statistical functions
+### Phase 2: Support Utilities ✅ COMPLETE
+- ✅ `Bitset` - Bitset operations for variable tracking
+- ✅ `Solver` - Numerical root-finding (bisection method) with status codes
+- ✅ `Stats` - Random number generation, distributions, probit, and Brownian motion
 
 ### Phase 3: Data Modules 📅 PLANNED
 - ⬜ `UsInflation` - Historical US inflation data
