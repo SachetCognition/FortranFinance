@@ -74,4 +74,68 @@ public class TvmTest {
         assertEquals(1000.0, result.getPv(), TOLERANCE);
         assertEquals(1000.0, result.getA(), TOLERANCE);
     }
+    
+    @Test
+    public void testTvmDelayedLevelAnnuityTooManyUnknowns() {
+        TvmResult result = Tvm.tvmDelayedLevelAnnuitySolve(-1, -1, -1, 1000, 1000, 0, 0, 
+                                                            VarSets.VAR_N + VarSets.VAR_I + VarSets.VAR_FV);
+        assertFalse(result.isSuccess());
+        assertEquals(Tvm.ERROR_TOO_MANY_UNKNOWNS_LEVEL, result.getStatus());
+    }
+    
+    @Test
+    public void testTvmDelayedLevelAnnuityUnknownVariable() {
+        TvmResult result = Tvm.tvmDelayedLevelAnnuitySolve(7, 10, -1, -1, 1000, 0, 0, VarSets.VAR_PMT);
+        assertFalse(result.isSuccess());
+        assertEquals(Tvm.ERROR_UNKNOWN_UNKNOWNS_LEVEL, result.getStatus());
+    }
+    
+    @Test
+    public void testTvmDelayedLevelAnnuityOrdinaryAnnuity() {
+        TvmResult result = Tvm.tvmDelayedLevelAnnuitySolve(7, 10, -1, 9487.1710000000130, 1000, 1, 0, VarSets.VAR_PV);
+        assertTrue(result.isSuccess());
+        assertEquals(4868.4188176929347, result.getPv(), 0.01);
+    }
+    
+    @Test
+    public void testTvmDelayedLevelAnnuityDueAnnuity() {
+        TvmResult result = Tvm.tvmDelayedLevelAnnuitySolve(7, 10, -1, 10435.888100000011, 1000, 0, 1, VarSets.VAR_PV);
+        assertTrue(result.isSuccess());
+        assertEquals(5355.2606994622283, result.getPv(), 0.01);
+    }
+    
+    @Test
+    public void testTvmDelayedLevelAnnuitySolveN() {
+        TvmResult result = Tvm.tvmDelayedLevelAnnuitySolve(-1, 10, 4868.4188176929347, 9487.1710000000130, 1000, 1, 0, VarSets.VAR_N);
+        assertTrue(result.isSuccess());
+        assertEquals(7.0, result.getN(), TOLERANCE);
+    }
+    
+    @Test
+    public void testTvmDelayedLevelAnnuitySolveI() {
+        TvmResult result = Tvm.tvmDelayedLevelAnnuitySolve(7, -1, 4868.4188176929347, 9487.1710000000130, 1000, 1, 0, VarSets.VAR_I);
+        assertTrue(result.isSuccess());
+        assertEquals(10.0, result.getI(), 0.01);
+    }
+    
+    @Test
+    public void testTvmDelayedLevelAnnuitySolveA() {
+        TvmResult result = Tvm.tvmDelayedLevelAnnuitySolve(7, 10, 4868.4188176929347, 9487.1710000000130, -1, 1, 0, VarSets.VAR_A);
+        assertTrue(result.isSuccess());
+        assertEquals(1000.0, result.getA(), TOLERANCE);
+    }
+    
+    @Test
+    public void testTvmDelayedLevelAnnuityDelayedPayment() {
+        TvmResult result = Tvm.tvmDelayedLevelAnnuitySolve(7, 10, -1, 10435.888100000011, 1000, 0, 1, VarSets.VAR_PV);
+        assertTrue(result.isSuccess());
+        assertEquals(5355.2606994622283, result.getPv(), 0.01);
+    }
+    
+    @Test
+    public void testTvmDelayedLevelAnnuityNegativeInterest() {
+        TvmResult result = Tvm.tvmDelayedLevelAnnuitySolve(7, -10, -1, 1385.1, 1000, 3, 3, VarSets.VAR_PV);
+        assertTrue(result.isSuccess());
+        assertEquals(2895.9, result.getPv(), 1.0);
+    }
 }

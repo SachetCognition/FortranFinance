@@ -24,6 +24,13 @@ public final class Tvm {
     public static final int ERROR_UNKNOWN_UNKNOWNS_LUMP_WRAPPER = 1193;
     public static final int ERROR_TOO_MANY_UNKNOWNS_LUMP_WRAPPER = 1194;
     
+    public static final int ERROR_TOO_MANY_UNKNOWNS_LEVEL = 1097;
+    public static final int ERROR_UNKNOWN_UNKNOWNS_LEVEL = 1098;
+    public static final int ERROR_LEVEL_I_SOLVER_FAILED_NO_N = 1099;
+    public static final int ERROR_LEVEL_I_SOLVER_FAILED_NO_FV = 1100;
+    public static final int ERROR_LEVEL_I_SOLVER_FAILED_NO_PV = 1101;
+    public static final int ERROR_INCONSISTENT_LEVEL = 1102;
+    
     private Tvm() {
         throw new AssertionError("Utility class");
     }
@@ -215,6 +222,174 @@ public final class Tvm {
         
         if (Math.abs(pv - expectedPv) > CONSISTENT_EPSILON || Math.abs(fv - expectedFv) > CONSISTENT_EPSILON) {
             return new TvmResult(n, i, pv, fv, a, 0, 0, ERROR_INCONSISTENT_LUMP);
+        }
+        
+        return new TvmResult(n, i, pv, fv, a, 0, 0, 0);
+    }
+    
+    /**
+     * Solve for TVM parameters for a level annuity certain.
+     * Can solve for any combination of 1 or 2 of: n, i, pv, fv, a.
+     * 
+     * @param n Number of compounding periods
+     * @param i Annual growth rate as a percentage
+     * @param pv Present Value
+     * @param fv Future Value
+     * @param a First payment (Annuity)
+     * @param d Delay from time zero
+     * @param e Early end counted from time end (t=n)
+     * @param unknowns What variables to solve for
+     * @return TvmResult with solved values and status
+     */
+    public static TvmResult tvmDelayedLevelAnnuitySolve(double n, double i, double pv, double fv, double a, int d, int e, int unknowns) {
+        int allowedVars = VarSets.VAR_N + VarSets.VAR_I + VarSets.VAR_PV + VarSets.VAR_FV + VarSets.VAR_A;
+        int numUnknowns = Bitset.size(unknowns);
+        
+        if (numUnknowns > 2) {
+            return new TvmResult(n, i, pv, fv, a, 0, 0, ERROR_TOO_MANY_UNKNOWNS_LEVEL);
+        }
+        
+        if (Bitset.isNotSubset(unknowns, allowedVars)) {
+            return new TvmResult(n, i, pv, fv, a, 0, 0, ERROR_UNKNOWN_UNKNOWNS_LEVEL);
+        }
+        
+        if (numUnknowns > 0) {
+            double[] islvivl0 = {0.0 + MrfflConfig.ZERO_EPSILON, -100.0 + MrfflConfig.ZERO_EPSILON, -99999.0};
+            double[] islvivl1 = {99999.0, 0.0 - MrfflConfig.ZERO_EPSILON, -100.0 - MrfflConfig.ZERO_EPSILON};
+            
+            if (Bitset.isSubset(VarSets.VAR_A, unknowns)) {
+                if (Bitset.isSubset(VarSets.VAR_I, unknowns)) {
+                    i = Percentages.fractionToPercentage(Math.pow(fv / pv, 1.0 / n) - 1);
+                }
+                double iq = Percentages.percentageToFraction(i);
+                
+                if (Bitset.isSubset(VarSets.VAR_PV, unknowns)) {
+                    pv = Math.pow(1 + iq, -n) * fv;
+                } else if (Bitset.isSubset(VarSets.VAR_FV, unknowns)) {
+                    fv = pv * Math.pow(1 + iq, n);
+                } else if (Bitset.isSubset(VarSets.VAR_N, unknowns)) {
+                    n = -Math.log(pv / fv) / Math.log(1 + iq);
+                }
+                a = -fv * iq / (Math.pow(1 + iq, e) - Math.pow(1 + iq, 1 + n - d));
+                
+            } else if (Bitset.isSubset(VarSets.VAR_N, unknowns)) {
+                if (Bitset.isSubset(VarSets.VAR_I, unknowns)) {
+                    if ((d == 0) && (e == 0)) {
+                        i = Percentages.fractionToPercentage(-(fv - pv) * a / (a - pv) / fv);
+                    } else if ((d == 0) && (e == 1)) {
+                        i = Percentages.fractionToPercentage(-(fv - pv) * a / (a * fv - a * pv - fv * pv));
+                    } else if ((d == 1) && (e == 0)) {
+                        i = Percentages.fractionToPercentage(a * (fv - pv) / fv / pv);
+                    } else if ((d == 1) && (e == 1)) {
+                        i = Percentages.fractionToPercentage((fv - pv) * a / pv / (a + fv));
+                    } else {
+                        final double nFinal = n;
+                        final double pvFinal = pv;
+                        final double fvFinal = fv;
+                        final double aFinal = a;
+                        final int dFinal = d;
+                        final int eFinal = e;
+                        
+                        DoubleUnaryOperator sfINoN = iVal -> {
+                            double iq = Percentages.percentageToFraction(iVal);
+                            return (aFinal * Math.pow(1 + iq, eFinal) + fvFinal * iq) * pvFinal - Math.pow(1 + iq, 1 - dFinal) * aFinal * fvFinal;
+                        };
+                        
+                        SolverResult result = Solver.multiBisection(islvivl0, islvivl1, sfINoN, 1.0e-5, 1.0e-5, 1000, false);
+                        if (result.getStatus() != 0) {
+                            return new TvmResult(n, i, pv, fv, a, 0, 0, ERROR_LEVEL_I_SOLVER_FAILED_NO_N);
+                        }
+                        i = result.getXc();
+                    }
+                }
+                double iq = Percentages.percentageToFraction(i);
+                
+                if (Bitset.isSubset(VarSets.VAR_PV, unknowns)) {
+                    pv = Math.pow(1 + iq, 1 - d) * a * fv / (a * Math.pow(1 + iq, e) + fv * iq);
+                } else if (Bitset.isSubset(VarSets.VAR_FV, unknowns)) {
+                    fv = Math.pow(1 + iq, e) * a * pv / (Math.pow(1 + iq, 1 - d) * a - iq * pv);
+                }
+                n = (Math.log(1 + iq) * d - Math.log(1 + iq) + Math.log((a * Math.exp(Math.log(1 + iq) * e) + fv * iq) / a)) / Math.log(1 + iq);
+                
+            } else {
+                if (Bitset.isSubset(VarSets.VAR_I, unknowns)) {
+                    if (Bitset.isSubset(VarSets.VAR_FV, unknowns)) {
+                        final double nFinal = n;
+                        final double pvFinal = pv;
+                        final double aFinal = a;
+                        final int dFinal = d;
+                        final int eFinal = e;
+                        
+                        DoubleUnaryOperator sfINoFv = iVal -> {
+                            double iq = Percentages.percentageToFraction(iVal);
+                            return (-Math.pow(1.0 / (1 + iq), nFinal - eFinal + 1) * (1 + iq) / iq + Math.pow(1.0 / (1 + iq), dFinal) * (1 + iq) / iq) * aFinal - pvFinal;
+                        };
+                        
+                        SolverResult result = Solver.multiBisection(islvivl0, islvivl1, sfINoFv, 1.0e-7, 1.0e-7, 1000, false);
+                        if (result.getStatus() != 0) {
+                            return new TvmResult(n, i, pv, fv, a, 0, 0, ERROR_LEVEL_I_SOLVER_FAILED_NO_FV);
+                        }
+                        i = result.getXc();
+                        
+                    } else if (Bitset.isSubset(VarSets.VAR_PV, unknowns)) {
+                        final double nFinal = n;
+                        final double fvFinal = fv;
+                        final double aFinal = a;
+                        final int dFinal = d;
+                        final int eFinal = e;
+                        
+                        DoubleUnaryOperator sfINoPv = iVal -> {
+                            double iq = Percentages.percentageToFraction(iVal);
+                            return 1.0 / iq * (-Math.pow(1 + iq, eFinal) + Math.pow(1 + iq, 1 + nFinal - dFinal)) * aFinal - fvFinal;
+                        };
+                        
+                        SolverResult result = Solver.multiBisection(islvivl0, islvivl1, sfINoPv, 1.0e-7, 1.0e-7, 1000, false);
+                        if (result.getStatus() != 0) {
+                            return new TvmResult(n, i, pv, fv, a, 0, 0, ERROR_LEVEL_I_SOLVER_FAILED_NO_PV);
+                        }
+                        i = result.getXc();
+                        
+                    } else {
+                        i = Percentages.fractionToPercentage(Math.pow(fv / pv, 1.0 / n) - 1);
+                    }
+                }
+                double iq = Percentages.percentageToFraction(i);
+                
+                if (Bitset.isSubset(VarSets.VAR_FV, unknowns)) {
+                    fv = 1.0 / iq * (-Math.pow(1 + iq, e) + Math.pow(1 + iq, 1 + n - d)) * a;
+                }
+                if (Bitset.isSubset(VarSets.VAR_PV, unknowns)) {
+                    pv = (-Math.pow(1.0 / (1 + iq), n - e + 1) * (1 + iq) / iq + Math.pow(1.0 / (1 + iq), d) * (1 + iq) / iq) * a;
+                }
+            }
+        }
+        
+        return tvmDelayedLevelAnnuityCheck(n, i, pv, fv, a, d, e);
+    }
+    
+    /**
+     * Check consistency of TVM parameters for a level annuity.
+     * 
+     * @param n Number of compounding periods
+     * @param i Annual growth rate as a percentage
+     * @param pv Present Value
+     * @param fv Future Value
+     * @param a First payment (Annuity)
+     * @param d Delay from time zero
+     * @param e Early end counted from time end
+     * @return TvmResult with status indicating consistency
+     */
+    public static TvmResult tvmDelayedLevelAnnuityCheck(double n, double i, double pv, double fv, double a, int d, int e) {
+        double iq = Percentages.percentageToFraction(i);
+        
+        double expectedFv = 1.0 / iq * (-Math.pow(1 + iq, e) + Math.pow(1 + iq, 1 + n - d)) * a;
+        double expectedPv = (-Math.pow(1.0 / (1 + iq), n - e + 1) * (1 + iq) / iq + Math.pow(1.0 / (1 + iq), d) * (1 + iq) / iq) * a;
+        
+        if (Math.abs(expectedFv - fv) > CONSISTENT_EPSILON) {
+            return new TvmResult(n, i, pv, fv, a, 0, 0, ERROR_INCONSISTENT_LEVEL);
+        }
+        if (Math.abs(expectedPv - pv) > CONSISTENT_EPSILON) {
+            return new TvmResult(n, i, pv, fv, a, 0, 0, ERROR_INCONSISTENT_LEVEL);
         }
         
         return new TvmResult(n, i, pv, fv, a, 0, 0, 0);
